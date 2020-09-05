@@ -48,13 +48,22 @@ public class AllocateMappedFileService extends ServiceThread {
         this.messageStore = messageStore;
     }
 
+    /**
+     * 提交两个创建映射文件的请求，路径分别为{@code nextFilePath}和{@code nextNextFilePath},
+     * 并等待路径为{@code nextFilePath}所对应的映射文件创建完成（{@code nextNextFilePath}所对应的映射文件则有服务线程异步创建，并不用等待它创建完成）
+     * @param nextFilePath
+     * @param nextNextFilePath
+     * @param fileSize
+     * @return
+     */
     public MappedFile putRequestAndReturnMappedFile(String nextFilePath, String nextNextFilePath, int fileSize) {
-        int canSubmitRequests = 2;
+        int canSubmitRequests = 2; // 默认可以提交2个请求
         // 仅当transientStorePoolEnable为true，FlushDiskType为ASYNC_FLUSH，并且broker为主节点时，才启用transientStorePool。
-        // 同时在启用快速失败策略时，计算transientStorePool中剩余的buffer数量减去requestQueue中待分配的数量后，剩余的buffer数量
+        // 同时在启用快速失败策略时，计算transientStorePool中剩余的buffer数量减去requestQueue中待分配的数量后，剩余的buffer数量如果小于等于0则快速失败
         if (this.messageStore.getMessageStoreConfig().isTransientStorePoolEnable()) {
             if (this.messageStore.getMessageStoreConfig().isFastFailIfNoBufferInStorePool()
                 && BrokerRole.SLAVE != this.messageStore.getMessageStoreConfig().getBrokerRole()) { //if broker is slave, don't fast fail even no buffer in pool
+                // requestQueue待处理分配映射文件的所有的请求
                 canSubmitRequests = this.messageStore.getTransientStorePool().remainBufferNumbs() - this.requestQueue.size();
             }
         }
@@ -64,7 +73,7 @@ public class AllocateMappedFileService extends ServiceThread {
         // 如果requestTable中已存在该路径文件的分配请求，说明该请求已经在排队中，
         // 就不需要再次检查才启用transientStorePool中的buffer是否够用，以及向requestQueue队列中添加分配请求
         if (nextPutOK) {
-            if (canSubmitRequests <= 0) {
+            if (canSubmitRequests <= 0) { // 如果transientStorePool中的buffer不够了，快速失败
                 log.warn("[NOTIFYME]TransientStorePool is not enough, so create mapped file error, " +
                     "RequestQueueSize : {}, StorePoolSize: {}", this.requestQueue.size(), this.messageStore.getTransientStorePool().remainBufferNumbs());
                 this.requestTable.remove(nextFilePath);
@@ -141,6 +150,9 @@ public class AllocateMappedFileService extends ServiceThread {
         }
     }
 
+    /**
+     * 异步处理，调用mmapOperation完成请求的处理
+     */
     public void run() {
         log.info(this.getServiceName() + " service started");
 
@@ -157,6 +169,7 @@ public class AllocateMappedFileService extends ServiceThread {
         boolean isSuccess = false;
         AllocateRequest req = null;
         try {
+            // 检索并删除此队列的首节点，必要时等待，直到有元素可用
             req = this.requestQueue.take();
             AllocateRequest expectedRequest = this.requestTable.get(req.getFilePath());
             if (null == expectedRequest) {
@@ -174,6 +187,7 @@ public class AllocateMappedFileService extends ServiceThread {
                 long beginTime = System.currentTimeMillis();
 
                 MappedFile mappedFile;
+                // 仅当transientStorePoolEnable为true，FlushDiskType为ASYNC_FLUSH，并且broker为主节点时，才启用transientStorePool
                 if (messageStore.getMessageStoreConfig().isTransientStorePoolEnable()) {
                     try {
                         mappedFile = ServiceLoader.load(MappedFile.class).iterator().next();
@@ -185,7 +199,7 @@ public class AllocateMappedFileService extends ServiceThread {
                 } else {
                     mappedFile = new MappedFile(req.getFilePath(), req.getFileSize());
                 }
-
+                // 计算创建映射文件耗时
                 long eclipseTime = UtilAll.computeEclipseTimeMilliseconds(beginTime);
                 if (eclipseTime > 10) {
                     int queueSize = this.requestQueue.size();
@@ -198,6 +212,7 @@ public class AllocateMappedFileService extends ServiceThread {
                     .getMapedFileSizeCommitLog()
                     &&
                     this.messageStore.getMessageStoreConfig().isWarmMapedFileEnable()) {
+                    // 进行预热
                     mappedFile.warmMappedFile(this.messageStore.getMessageStoreConfig().getFlushDiskType(),
                         this.messageStore.getMessageStoreConfig().getFlushLeastPagesWhenWarmMapedFile());
                 }

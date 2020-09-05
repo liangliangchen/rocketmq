@@ -201,12 +201,15 @@ public class MappedFile extends ReferenceResource {
     public AppendMessageResult appendMessagesInner(final MessageExt messageExt, final AppendMessageCallback cb) {
         assert messageExt != null;
         assert cb != null;
-
+        // 当前这个MappedFile的写入位置
         int currentPos = this.wrotePosition.get();
 
-        if (currentPos < this.fileSize) {
+        if (currentPos < this.fileSize) { // 文件还有剩余空间
+            // 仅当transientStorePoolEnable为true，刷盘策略为异步刷盘（FlushDiskType为ANSY_FLUSH），并且broker为主节点时，才启用transientStorePool
+            // writeBuffer/mappedByteBuffer的position始终为0，而limit则始终等于capacity
+            // slice是根据position和limit来生成byteBuffer
             ByteBuffer byteBuffer = writeBuffer != null ? writeBuffer.slice() : this.mappedByteBuffer.slice();
-            byteBuffer.position(currentPos);
+            byteBuffer.position(currentPos); // 设置写的起始位置
             AppendMessageResult result = null;
             if (messageExt instanceof MessageExtBrokerInner) {
                 result = cb.doAppend(this.getFileFromOffset(), byteBuffer, this.fileSize - currentPos, (MessageExtBrokerInner) messageExt);

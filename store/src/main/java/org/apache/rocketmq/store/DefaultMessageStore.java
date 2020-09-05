@@ -72,17 +72,29 @@ public class DefaultMessageStore implements MessageStore {
     private final FlushConsumeQueueService flushConsumeQueueService;
 
     private final CleanCommitLogService cleanCommitLogService;
-
+    /**
+     * ConsumeQueue定时清除服务
+     */
     private final CleanConsumeQueueService cleanConsumeQueueService;
-
+    /**
+     * 索引服务
+     */
     private final IndexService indexService;
-
+    /**
+     * MappedFile分配服务，RocketMQ使用内存映射处理CommitLog，ConsumeQueue文件
+     */
     private final AllocateMappedFileService allocateMappedFileService;
-
+    /**
+     * 转发消息服务，它会将消息的位置信息和索引信息转发到消息队列和索引队列
+     */
     private final ReputMessageService reputMessageService;
-
+    /**
+     * 主从同步服务
+     */
     private final HAService haService;
-
+    /**
+     * 定时任务调度器，执行定时任务，主要是处理定时任务
+     */
     private final ScheduleMessageService scheduleMessageService;
 
     private final StoreStatsService storeStatsService;
@@ -307,7 +319,7 @@ public class DefaultMessageStore implements MessageStore {
             log.warn("message store has shutdown, so putMessage is forbidden");
             return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
         }
-
+        // Slave Broker不处理客户端发送的消息
         if (BrokerRole.SLAVE == this.messageStoreConfig.getBrokerRole()) {
             long value = this.printTimes.getAndIncrement();
             if ((value % 50000) == 0) {
@@ -316,7 +328,7 @@ public class DefaultMessageStore implements MessageStore {
 
             return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
         }
-
+        // Broker不可写时，也不处理客户端发送的消息
         if (!this.runningFlags.isWriteable()) {
             long value = this.printTimes.getAndIncrement();
             if ((value % 50000) == 0) {
@@ -327,21 +339,21 @@ public class DefaultMessageStore implements MessageStore {
         } else {
             this.printTimes.set(0);
         }
-
+        // Topic的长度限制
         if (msg.getTopic().length() > Byte.MAX_VALUE) {
             log.warn("putMessage message topic length too long " + msg.getTopic().length());
             return new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, null);
         }
-
+        // Message的扩展属性的长度限制
         if (msg.getPropertiesString() != null && msg.getPropertiesString().length() > Short.MAX_VALUE) {
             log.warn("putMessage message properties length too long " + msg.getPropertiesString().length());
             return new PutMessageResult(PutMessageStatus.PROPERTIES_SIZE_EXCEEDED, null);
         }
-
+        // 将Message刷新到OSPageCache如果耗时较长的话，broker降级
         if (this.isOSPageCacheBusy()) {
             return new PutMessageResult(PutMessageStatus.OS_PAGECACHE_BUSY, null);
         }
-
+        // 从业务层到逻辑层，putMessage是咱们存储的核心流程
         long beginTime = this.getSystemClock().now();
         PutMessageResult result = this.commitLog.putMessage(msg);
 
@@ -1754,7 +1766,9 @@ public class DefaultMessageStore implements MessageStore {
                     && this.reputFromOffset >= DefaultMessageStore.this.getConfirmOffset()) {
                     break;
                 }
-
+                // 主要是构建ConsumeQueue和Index
+                // reputFromOffset: 构建过ConsumeQueue/Index的进度
+                // result存储的是已经刷过盘的CommitLog的进度-reputFromOffset，就是可以构建ConsumeQueue/Index的Message
                 SelectMappedBufferResult result = DefaultMessageStore.this.commitLog.getData(reputFromOffset);
                 if (result != null) {
                     try {

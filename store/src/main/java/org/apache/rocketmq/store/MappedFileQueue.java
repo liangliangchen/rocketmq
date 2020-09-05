@@ -39,15 +39,36 @@ public class MappedFileQueue {
 
     private final int mappedFileSize;
 
+    /**
+     * MappedFileQueue所维护的所有映射文件{@link MappedFile}集合
+     */
     private final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<MappedFile>();
 
+    /**
+     * 预分配映射文件的服务线程，RocketMQ使用内存映射处理CommitLog，ConsumeQueue文件
+     */
     private final AllocateMappedFileService allocateMappedFileService;
 
+    /**
+     * 当前已刷盘的物理位置（全局）
+     */
     private long flushedWhere = 0;
+    /**
+     * 当前已提交的物理位置（全局）
+     * 所谓提交就是将 {@link MappedFile#writeBuffer}的脏数据写到{@link MappedFile#fileChannel}
+     */
     private long committedWhere = 0;
-
+    /**
+     * 当前已刷盘的最后一个消息存储的时间戳
+     */
     private volatile long storeTimestamp = 0;
 
+    /**
+     * 构造函数
+     * @param storePath                 CommitLog文件的存储路径
+     * @param mappedFileSize            CommitLog文件大小，默认为1G
+     * @param allocateMappedFileService MappedFile分配线程，RocketMQ使用内存映射处理commitLog，consumeQueue文件
+     */
     public MappedFileQueue(final String storePath, int mappedFileSize,
         AllocateMappedFileService allocateMappedFileService) {
         this.storePath = storePath;
@@ -55,6 +76,12 @@ public class MappedFileQueue {
         this.allocateMappedFileService = allocateMappedFileService;
     }
 
+    /**
+     * checkSelf自检
+     * <p>
+     *     检查mappedFiles中，除去最后一个文件，其余每一个mappedFile的大小是否是mappedFileSize
+     * </p>
+     */
     public void checkSelf() {
 
         if (!this.mappedFiles.isEmpty()) {
@@ -144,8 +171,15 @@ public class MappedFileQueue {
         }
     }
 
+    /**
+     * 对MappedFileQueue中的mappedFiles进行初始化，
+     * <p>
+     *     方法首先会根据文件名称对commitLog文件进行升序排序，然后丢弃大小不为mappedFileSize的文件及其后续文件
+     * </p>
+     * @return
+     */
     public boolean load() {
-        File dir = new File(this.storePath);
+        File dir = new File(this.storePath); // CommitLog文件的存储目录
         File[] files = dir.listFiles();
         if (files != null) {
             // ascending order
@@ -194,21 +228,28 @@ public class MappedFileQueue {
     public MappedFile getLastMappedFile(final long startOffset, boolean needCreate) {
         long createOffset = -1;
         MappedFile mappedFileLast = getLastMappedFile();
-
+        // 最后一个映射文件为null，也即mappedFile为空，创建一个新的映射文件（这也是第一个映射文件）
         if (mappedFileLast == null) {
+            // 计算将要创建的映射文件的物理偏移量
+            // 如果指定的startOffset不足mappedFileSize，则从offset 0开始
+            // 否则，从为mappedFileSize整数倍的offset开始
             createOffset = startOffset - (startOffset % this.mappedFileSize);
         }
-
+        // 最后一个映射文件已经写满了，创建一个新的映射文件
         if (mappedFileLast != null && mappedFileLast.isFull()) {
+            // 计算将要创建的映射文件的物理偏移量
+            // 该映射文件的物理偏移量等于上一个CommitLog文件的物理偏移量加上CommitLog文件大小
             createOffset = mappedFileLast.getFileFromOffset() + this.mappedFileSize;
         }
-
+        // 创建新的映射文件
         if (createOffset != -1 && needCreate) {
+            // 构造CommitLog文件名称
             String nextFilePath = this.storePath + File.separator + UtilAll.offset2FileName(createOffset);
             String nextNextFilePath = this.storePath + File.separator
                 + UtilAll.offset2FileName(createOffset + this.mappedFileSize);
             MappedFile mappedFile = null;
-
+            // 优先通过AllocateMappedFileService创建映射文件，因为是预分配方式，性能很高
+            // 如果上述方式分配失败，再通过new创建映射文件
             if (this.allocateMappedFileService != null) {
                 mappedFile = this.allocateMappedFileService.putRequestAndReturnMappedFile(nextFilePath,
                     nextNextFilePath, this.mappedFileSize);
